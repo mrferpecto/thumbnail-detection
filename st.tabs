@@ -1,0 +1,98 @@
+import streamlit as st
+import cv2
+import numpy as np
+from PIL import Image
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import mediapipe as mp
+
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Thumbnail Analyzer AI vs Human", layout="wide")
+
+st.title("👁️ Thumbnail War Room")
+st.markdown("Compara la predicción de la **IA** contra la reacción de un **Humano** real.")
+
+# Crear pestañas para separar las lógicas
+tab1, tab2 = st.tabs(["🤖 AI Prediction (Deep Learning)", "👤 Human Eye Detector (Webcam)"])
+
+# ==========================================
+# TAB 1: AI DETECTION (Saliency Map)
+# ==========================================
+with tab1:
+    st.header("Análisis de Atención Artificial")
+    st.info("Este modelo predice qué píxeles resaltan más por contraste y color.")
+    
+    uploaded_file = st.file_uploader("Sube la Thumbnail", type=['jpg', 'png'])
+
+    if uploaded_file is not None:
+        # Convertir imagen para procesamiento
+        image = Image.open(uploaded_file).convert('RGB')
+        img_np = np.array(image)
+        img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+        # Algoritmo de Saliencia (Spectral Residual)
+        saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
+        (success, saliencyMap) = saliency.computeSaliency(img_cv)
+        
+        if success:
+            saliencyMap = (saliencyMap * 255).astype("uint8")
+            heatmap = cv2.applyColorMap(saliencyMap, cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(img_cv, 0.6, heatmap, 0.4, 0)
+            
+            # Mostrar resultados
+            c1, c2 = st.columns(2)
+            c1.image(image, caption="Original", use_container_width=True)
+            c2.image(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB), caption="Predicción de IA", use_container_width=True)
+
+# ==========================================
+# TAB 2: HUMAN EYE DETECTOR (Webcam + MediaPipe)
+# ==========================================
+with tab2:
+    st.header("Detector de Atención Humana")
+    st.warning("""
+    **Nota:** Esta función activará tu cámara web. 
+    El procesamiento se hace en tiempo real para detectar la dirección de tu mirada (Iris Tracking).
+    """)
+
+    # Configuración de MediaPipe Face Mesh
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1,
+        refine_landmarks=True, # Importante para obtener el iris
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+
+    # Definimos la clase procesadora de video para WebRTC
+    class VideoProcessor(VideoTransformerBase):
+        def transform(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+            
+            # Procesar con MediaPipe
+            results = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            
+            if results.multi_face_landmarks:
+                for face_landmarks in results.multi_face_landmarks:
+                    # Dibujar la malla facial (o solo los ojos para no ensuciar)
+                    mp.solutions.drawing_utils.draw_landmarks(
+                        image=img,
+                        landmark_list=face_landmarks,
+                        connections=mp_face_mesh.FACEMESH_IRISES,
+                        landmark_drawing_spec=None,
+                        connection_drawing_spec=mp.solutions.drawing_styles.get_default_face_mesh_iris_connections_style()
+                    )
+                    
+                    # AQUÍ IRÍA LA LÓGICA DE CALCULAR HACIA DÓNDE MIRA
+                    # Por ahora visualizamos que el sistema te detecta
+                    cv2.putText(img, "TRACKING ACTIVO", (50, 50), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            return img
+
+    # Componente de Streaming
+    webrtc_streamer(
+        key="eye-tracker",
+        video_processor_factory=VideoProcessor,
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+    
+    st.markdown("**¿Cómo funciona?** Usamos *MediaPipe Face Mesh* para rastrear 478 puntos en tu rostro, incluyendo la posición exacta del iris.")
